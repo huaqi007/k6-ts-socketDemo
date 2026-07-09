@@ -27,6 +27,7 @@ export default function (): void {
     url: WS_URL,
     symbols: ['btcusdt@depth'],
     maxReconnects: 3,     // 每次迭代重连 3 次后结束
+    maxTotalMs: 60000,    // 或单次迭代重连累计 60s 兜底结束（双保险）
     sessionMs: 5000,      // 每条连接维持 5s 后主动断开
     baseDelayMs: 500,     // 退避基准
     maxDelayMs: 30000,    // 退避上限

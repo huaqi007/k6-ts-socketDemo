@@ -40,6 +40,12 @@ export default function (): void {
   // 1) 取模板 → 2) 实时签名 → 3) 下单
   const tpl = randomTemplate();
   const signed = signOrder(tpl, BASE_URL);
+  if (!signed) {
+    // 签名失败（如 secret 异常）：安全跳过，不终止 VU
+    metrics.orderErrors.add(1);
+    metrics.orderSuccessRate.add(false);
+    return;
+  }
 
   const res = http.post(signed.url, null, {
     headers: signed.headers,

@@ -23,6 +23,7 @@
 import { SharedArray } from 'k6/data';
 import crypto from 'k6/crypto';
 import { getApiKey, getApiSecret } from '../config/env';
+import { metrics } from '../lib/metrics';
 
 // ============================================================================
 // 类型
@@ -75,33 +76,53 @@ export const templatesBySymbol: Record<string, number[]> = (() => {
  * 依据 Binance 规则对订单模板签名。
  *
  * 步骤：
- *   1. 组装业务参数 + timestamp + recvWindow，按固定顺序拼成 query string；
- *   2. signature = HMAC_SHA256(secret, query)（十六进制）；
- *   3. 把 signature 追加到 query 末尾，拼成完整下单 URL；
- *   4. apiKey 放请求头（明文），secret 绝不出现在请求中。
+ *   1. 组装全部签名参数（业务参数 + timestamp + recvWindow）；
+ *   2. ✅ 按「参数名字母序」拼接成 query string —— 对齐真实 Binance 的签名约定，
+ *      使本地签名可直接迁移到真实交易所（mock 对原始 query 重算，二者始终一致）；
+ *   3. signature = HMAC_SHA256(secret, query)（十六进制）；
+ *   4. 把 signature 追加到 query 末尾，拼成完整下单 URL；
+ *   5. apiKey 放请求头（明文），secret 绝不出现在请求中。
+ *
+ * HMAC 计算包在 try-catch 中：secret 为空 / 参数异常时不会终止整个 VU 迭代，
+ * 而是记录 script_errors 并返回 null，交由调用方安全跳过本次下单。
  *
  * @param tpl        订单参数模板
+ * @param baseUrl    REST 基地址
  * @param recvWindow 服务端可接受的时间戳偏差窗口（毫秒），默认 5000
- * @param baseUrl    REST 基地址（默认由调用方拼好路径，这里只返回相对/绝对 url）
+ * @returns 可发送的签名请求；签名失败时返回 null
  */
-export function signOrder(tpl: OrderTemplate, baseUrl: string, recvWindow = 5000): SignedRequest {
+export function signOrder(tpl: OrderTemplate, baseUrl: string, recvWindow = 5000): SignedRequest | null {
   const apiKey = getApiKey();
   const secret = getApiSecret();
-  const timestamp = Date.now();
 
-  // 参数顺序需与服务端重算时一致；这里采用「业务参数 → timestamp → recvWindow」
-  const query =
-    `symbol=${tpl.symbol}` +
-    `&side=${tpl.side}` +
-    `&type=${tpl.type}` +
-    `&timeInForce=${tpl.timeInForce}` +
-    `&quantity=${tpl.quantity}` +
-    `&price=${tpl.price}` +
-    `&recvWindow=${recvWindow}` +
-    `&timestamp=${timestamp}`;
+  // 汇总所有参与签名的参数（值统一转成字符串拼接）
+  const params: Record<string, string | number> = {
+    symbol: tpl.symbol,
+    side: tpl.side,
+    type: tpl.type,
+    timeInForce: tpl.timeInForce,
+    quantity: tpl.quantity,
+    price: tpl.price,
+    recvWindow,
+    timestamp: Date.now(),
+  };
 
-  // HMAC-SHA256 签名（k6/crypto 运行时提供）
-  const signature = crypto.hmac('sha256', secret, query, 'hex');
+  // ✅ 按参数名字母序排序后拼接：price → quantity → recvWindow → side
+  //    → symbol → timeInForce → timestamp → type（与真实 Binance 约定一致）
+  const query = Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+
+  // HMAC-SHA256 签名（k6/crypto 运行时提供）；异常时安全降级
+  let signature: string;
+  try {
+    signature = crypto.hmac('sha256', secret, query, 'hex') as string;
+  } catch (e) {
+    metrics.scriptErrors.add(1);
+    console.error(`[signOrder] HMAC 计算失败，跳过本次下单: ${e}`);
+    return null;
+  }
 
   return {
     url: `${baseUrl}/api/v3/order?${query}&signature=${signature}`,

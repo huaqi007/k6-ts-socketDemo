@@ -43,6 +43,11 @@ export function wsMarketData(): void {
 export function signedOrder(): void {
   const tpl = randomTemplate();
   const signed = signOrder(tpl, BASE_URL);
+  if (!signed) {
+    metrics.orderErrors.add(1);
+    metrics.orderSuccessRate.add(false);
+    return;
+  }
 
   const res = http.post(signed.url, null, {
     headers: signed.headers,

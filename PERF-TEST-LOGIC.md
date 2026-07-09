@@ -63,6 +63,9 @@ delay(n) = min( base · 2^(n-1) · U[0.75,1.25],  maxDelay )
 
 实测三档退避区间 `383–617 / 790–1245 / 1536–2500 ms` 精确落在理论区间内，框架正确。
 
+### 4.4 双重退出保险
+单靠「重连次数上限」不够：退避封顶到 30s 后，若次数设得大，单次迭代可能长达数分钟，VU 迟迟不释放、并发被虚占。因此额外加 **`maxTotalMs`（重连累计总时长上限）**——次数与总时长任一触顶即结束本次迭代，双保险确保 VU 及时回到执行器调度。
+
 ---
 
 ## 五、第 3 步：阶梯拉到 500 VU（需求 3）
@@ -81,11 +84,13 @@ delay(n) = min( base · 2^(n-1) · U[0.75,1.25],  maxDelay )
 
 ### 6.1 签名算法逻辑
 ```
-totalParams = 有序 query（业务参数 + recvWindow + timestamp）
+totalParams = 按参数名「字母序」拼接的 query（业务参数 + recvWindow + timestamp）
 signature   = HMAC_SHA256(secret, totalParams)  # 十六进制
 请求        = POST /api/v3/order?<totalParams>&signature=<sig>   +  Header X-MBX-APIKEY
 ```
-服务端按 `&signature=` 切割，对前半段重算 HMAC 比对——**客户端拼串顺序必须与服务端重算顺序一致**，否则必然验签失败。这是签名类压测最常见的坑。
+- **字母序拼接**（`price → quantity → recvWindow → side → symbol → timeInForce → timestamp → type`）对齐真实 Binance 约定，签名逻辑可无缝迁移到真实交易所。
+- 服务端按 `&signature=` 切割，对前半段**逐字重算** HMAC 比对——只要客户端拼串与服务端重算的是同一串（顺序无所谓、但必须一致），验签就成立。字母序是双方都认的稳定约定，最省心。
+- HMAC 计算包 try-catch：secret 异常时记 `script_errors` 并返回 null，调用方跳过本次下单，不终止 VU。
 
 ### 6.2 为什么「实时签名」而非「纯预签名」
 `pre-signer.ts` 参考了 workDemo 的 SharedArray 预加载思路，但做了升级：
@@ -112,7 +117,12 @@ signature   = HMAC_SHA256(secret, totalParams)  # 十六进制
 - 分开跑各自 100% 通过，不代表混合时也行——资源竞争、GC 压力、连接饥饿只在混合负载下暴露。
 - 混合场景才是「全链路」压测的真正含义。
 
-实测：峰值 530 VU（500 行情 + ≤30 下单）、131 万 checks 100% 通过、2.1 万单 100% 成功——两条链路互不拖垮。
+**如何量化「交叉劣化」**（这一步是混合压测的灵魂，也是分开跑给不出的结论）：
+- k6 自动给每条指标打 `{scenario}` 标签，可在 Grafana 按场景切片、对齐同一时间窗对比两条链路。
+- 引入 `ws_msg_gap_ms`（相邻深度帧间隔）作为**背压探针**：服务端固定每 100ms 推一帧，正常客户端也应每 ~100ms 收一帧；一旦下单高峰抢占 CPU/事件循环导致 WS 收帧被拖慢，该间隔会立刻抬高——这就是「下单拖累了行情」的量化证据。
+- `mixed-scenario` 用 **thresholds 同时给两条链路上门禁**（`ws_connect_rate/ws_depth_valid_rate/ws_first_msg_ms/ws_msg_gap_ms/order_success_rate/order_latency_ms`），任一条在混合负载下劣化都会让整个测试判失败。
+
+实测：峰值 530 VU（500 行情 + ≤30 下单）、131 万 checks 100% 通过、2.1 万单 100% 成功；关键地，`ws_msg_gap_ms` p95 = **102ms**（≈推送周期），说明在本机负载下两条链路互不拖垮，6 项门禁全绿。
 
 ---
 

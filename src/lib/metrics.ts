@@ -19,6 +19,7 @@ export const metrics = {
   wsConnectRate: new Rate('ws_connect_rate'),         // 连接成功率
   wsMessages: new Counter('ws_depth_messages'),       // 收到的深度快照总条数
   wsFirstMsgLatency: new Trend('ws_first_msg_ms', true), // 从 open 到首帧深度的耗时
+  wsMsgGap: new Trend('ws_msg_gap_ms', true),         // 相邻两帧深度间隔（推送时效/背压信号）
   wsDepthValidRate: new Rate('ws_depth_valid_rate'),  // 深度报文含有效 bids/asks 的比率
   wsReconnects: new Counter('ws_reconnects'),         // 断线重连触发次数
   wsErrors: new Counter('ws_errors'),                 // socket error 事件次数

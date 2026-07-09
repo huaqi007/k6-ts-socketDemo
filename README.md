@@ -121,12 +121,14 @@ export function parseDepth(raw: string): DepthSnapshot | null {
 ```ts
 export function connectWithReconnect(opts): void {
   let reconnectCount = 0;
+  const startedAt = Date.now();
   while (true) {                                   // ★ 重连主循环
     metrics.wsConnecting.add(1);
     ws.connect(opts.url, (socket) => {             // 阻塞运行本次会话
       registerDepthHandlers(socket, opts);         // sessionMs 到点主动 close
     });
-    if (reconnectCount >= opts.maxReconnects) break;
+    if (reconnectCount >= opts.maxReconnects) break;         // 退出保险①：次数上限
+    if (Date.now() - startedAt >= opts.maxTotalMs) break;    // 退出保险②：总时长上限
     reconnectCount++;
     metrics.wsReconnects.add(1);
     const delay = computeBackoffMs(reconnectCount); // 指数退避 + jitter
@@ -134,6 +136,8 @@ export function connectWithReconnect(opts): void {
   }
 }
 ```
+
+> **双重退出保险**：`maxReconnects`（次数）+ `maxTotalMs`（总时长）。退避封顶到 30s 后，若重连次数设得大，单靠次数上限单次迭代可能耗时过长、VU 迟迟不释放；总时长上限兜底避免 VU 长期占用。
 
 **指数退避 + jitter**：
 ```ts
@@ -166,13 +170,15 @@ gracefulRampDown: '15s',
 
 ### 5.4 需求 4 — Binance 风格 HMAC-SHA256 签名
 
-**签名规则**：`signature = HMAC_SHA256(secret, totalParams)`，`totalParams` 为排好序的 query string。
+**签名规则**：`signature = HMAC_SHA256(secret, totalParams)`，`totalParams` 为**按参数名字母序**拼接的 query string（对齐真实 Binance 约定，可直接迁移到真实交易所）。
 
 ```ts
-const query =
-  `symbol=${t.symbol}&side=${t.side}&type=${t.type}&timeInForce=${t.timeInForce}` +
-  `&quantity=${t.quantity}&price=${t.price}&recvWindow=${recvWindow}&timestamp=${Date.now()}`;
-const signature = crypto.hmac('sha256', secret, query, 'hex');
+const params = { symbol, side, type, timeInForce, quantity, price, recvWindow, timestamp };
+// 字母序：price → quantity → recvWindow → side → symbol → timeInForce → timestamp → type
+const query = Object.keys(params).sort().map((k) => `${k}=${params[k]}`).join('&');
+let signature: string;
+try { signature = crypto.hmac('sha256', secret, query, 'hex'); }
+catch (e) { metrics.scriptErrors.add(1); return null; } // HMAC 异常不崩 VU
 // POST /api/v3/order?<query>&signature=<signature>   Header: X-MBX-APIKEY
 ```
 
@@ -195,6 +201,12 @@ scenarios: {
 ```
 - **ramping-vus**（行情）关注「并发连接数」；**ramping-arrival-rate**（下单）关注「到达率 RPS」，两者建模维度不同、更贴近真实。
 - 两链路竞争同一份 CPU/网络/靶机资源，能真实反映系统在混合负载下的表现。
+
+**交叉影响可观测性**（区别于「两场景分开跑」的核心价值）：
+- k6 自动给每条指标打 `{scenario}` 标签，可在 Prometheus/Grafana 按场景切片对比同一时间窗内两条链路。
+- `ws_msg_gap_ms`（相邻深度帧间隔）是关键「交叉劣化」信号：服务端固定每 100ms 推一次，若下单高峰抢占资源拖慢 WS 收帧，该间隔会抬高。
+- `mixed-scenario` 配了 **thresholds 同时对两条链路设门禁**（连接率/有效率/首帧延迟/帧间隔/下单成功率/下单延迟），任一条劣化即失败。
+- 实测：530 VU + 150 RPS 混合负载下 `ws_msg_gap_ms` p95 = **102ms**（≈100ms 推送周期），两条链路未互相拖垮，6 项门禁全绿。
 
 ---
 
@@ -235,6 +247,7 @@ k6 run -e WS_URL=ws://host:8080/ws -e BASE_URL=http://host:8080 dist/mixed-scena
 | `ws_connect_attempts` / `ws_connect_success` / `ws_connect_rate` | Counter/Rate | 连接尝试 / 成功 / 成功率 |
 | `ws_depth_messages` / `ws_depth_valid_rate` | Counter/Rate | 深度快照条数 / bids-asks 有效率 |
 | `ws_first_msg_ms` | Trend | open→首帧深度延迟（p90/p95/p99） |
+| `ws_msg_gap_ms` | Trend | 相邻深度帧间隔（背压/资源争抢信号，混合场景交叉劣化用） |
 | `ws_reconnects` | Counter | 断线重连触发次数 |
 | `orders_placed` / `order_errors` / `order_success_rate` | Counter/Rate | 下单成功 / 失败 / 成功率 |
 | `order_latency_ms` | Trend | 下单 HTTP 延迟分布 |
@@ -249,15 +262,28 @@ k6 run -e WS_URL=ws://host:8080/ws -e BASE_URL=http://host:8080 dist/mixed-scena
 |------|----------|------|
 | 01 连通性 | ws handshake 101 | 100%（250/250） |
 | 02 订阅深度 | has bids/asks，首帧延迟 | 100%（3558/3558），~101ms |
-| 03 断线重连 | 退避序列 | 383–617 / 790–1245 / 1536–2500 ms（指数+jitter 吻合） |
+| 03 断线重连 | 退避序列 / 帧间隔 | 380–616 / 775–1199 / 1582–2491 ms（指数+jitter 吻合）；`ws_msg_gap` ~101ms |
 | 04 500 VU | 峰值 VU / 深度有效率 | 500 VU / 610,970 条 100% 有效 |
-| 05 签名下单 | 受理率 | 100%（4199/4199）；负向用例全部正确拒绝 |
-| mixed 全链路 | 峰值 VU / checks / 下单成功率 | 530 VU / 1,315,004 checks 100% / 21,000 单 100% |
+| 05 签名下单 | 受理率（字母序签名） | 100%（4200/4200）；负向用例全部正确拒绝 |
+| mixed 全链路 | 峰值 VU / checks / 6 项门禁 | 530 VU / 1,314,744 checks 100% / 21,000 单 100% / thresholds 全绿（`ws_msg_gap` p95=102ms） |
 
 ---
 
-## 9. 常见问题（FAQ）
+## 9. 代码评审优化记录（v2）
+
+| 级别 | 问题 | 修复 |
+|------|------|------|
+| 🔴 中 | 签名字段非字母序，无法直连真实 Binance | `signOrder` 改为 `Object.keys().sort()` 字母序拼接，与真实 Binance 约定一致 |
+| 🟡 轻 | `parseDepth` 空字符串 symbol 误落 `UNKNOWN` | 显式挑「首个非空字符串」，空串/缺失才回退 |
+| 🟡 轻 | `crypto.hmac` 无 try-catch，异常终止 VU | 包 try-catch，失败记 `script_errors` 并返回 null，调用方安全跳过 |
+| 🟡 轻 | 重连仅有次数上限，无总时长上限 | 新增 `maxTotalMs`，次数 + 总时长双重退出保险 |
+| 🔵 观测 | 混合场景缺交叉影响指标 | 新增 `ws_msg_gap_ms` 帧间隔 Trend + `{scenario}` 标签 + 两链路联合 thresholds |
+
+---
+
+## 10. 常见问题（FAQ）
 
 - **为什么 01 场景加了 `sleep(0.2)`？** 无 pacing 时 5 VU 会以 ~5800 conn/s 疯狂建连-关闭，压垮单线程 mock 导致握手失败；加 pacing 才反映真实连通性。
 - **为什么下单是运行期实时签名而非纯预签名？** Binance `recvWindow` 对时间戳敏感，预签名的时间戳在压测中会过期被 `-1021` 拒绝；实时签名保证新鲜。
+- **签名字段顺序有讲究吗？** 有。本项目按参数名字母序拼接，与真实 Binance 约定一致；mock 对收到的原始 query 逐字重算 HMAC，故内部始终一致、又可无缝迁移真实交易所。
 - **`ws.connect` 能在回调里递归重连吗？** 不能。它是阻塞式的，递归会嵌套阻塞、VU 永不释放；必须用外层 while 循环重连。

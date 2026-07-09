@@ -34,6 +34,7 @@ export interface ReconnectOptions {
   url: string;                 // WS 地址
   symbols: string[];           // 订阅的频道，如 ['btcusdt@depth']
   maxReconnects?: number;      // 最大重连次数（超出后结束本次迭代）
+  maxTotalMs?: number;         // 单次迭代重连总时长上限（毫秒），双保险防 VU 长期不释放
   sessionMs?: number;          // 单条连接保持时长（到点主动关闭，触发重连）
   baseDelayMs?: number;        // 退避基准延迟
   maxDelayMs?: number;         // 退避上限
@@ -57,7 +58,11 @@ export function parseDepth(raw: string): DepthSnapshot | null {
   try {
     const data = JSON.parse(raw);
     if (Array.isArray(data.bids) && Array.isArray(data.asks)) {
-      return { symbol: data.s || data.symbol || 'UNKNOWN', bids: data.bids, asks: data.asks };
+      // s / symbol 都可能缺失或为空字符串（空串是 falsy 且非 nullish），
+      // 因此显式挑选「首个非空字符串」，避免误落到 'UNKNOWN'
+      const rawSym = data.s || data.symbol;
+      const symbol = typeof rawSym === 'string' && rawSym.length > 0 ? rawSym : 'UNKNOWN';
+      return { symbol, bids: data.bids, asks: data.asks };
     }
     return null;
   } catch (_) {
@@ -105,6 +110,8 @@ export function registerDepthHandlers(socket: any, opts: ReconnectOptions): void
   // 记录 open 时刻，用于计算「首帧深度」到达延迟
   let openedAt = 0;
   let firstMsgSeen = false;
+  // 记录上一帧到达时刻，用于计算相邻深度帧间隔（背压 / 推送时效信号）
+  let lastMsgAt = 0;
 
   socket.on('open', () => {
     openedAt = Date.now();
@@ -125,13 +132,20 @@ export function registerDepthHandlers(socket: any, opts: ReconnectOptions): void
     const depth = parseDepth(raw);
     if (!depth) return; // SUBSCRIBED 确认帧等，跳过
 
+    const now = Date.now();
     metrics.wsMessages.add(1);
 
     // 首帧深度延迟（open → 第一条深度）
     if (!firstMsgSeen && openedAt > 0) {
       firstMsgSeen = true;
-      metrics.wsFirstMsgLatency.add(Date.now() - openedAt);
+      metrics.wsFirstMsgLatency.add(now - openedAt);
     }
+
+    // 相邻两帧间隔：若明显超过服务端推送周期，说明客户端/服务端存在背压或资源争抢
+    if (lastMsgAt > 0) {
+      metrics.wsMsgGap.add(now - lastMsgAt);
+    }
+    lastMsgAt = now;
 
     // 业务校验：bids/asks 非空
     const valid = depth.bids.length > 0 && depth.asks.length > 0;
@@ -165,17 +179,19 @@ export function registerDepthHandlers(socket: any, opts: ReconnectOptions): void
  * 生命周期（单个 VU 的一次迭代内）：
  *   1. 发起连接（记录尝试次数 → 指标）；
  *   2. ws.connect 阻塞运行本次会话（内部会在 sessionMs 后主动关闭）；
- *   3. 连接关闭返回后，若未达 maxReconnects：计算退避延迟、sleep、重连；
- *   4. 达到 maxReconnects：跳出循环，结束本次迭代（由 k6 执行器决定是否再拉起）。
+ *   3. 连接关闭返回后，若未达 maxReconnects 且未超 maxTotalMs：计算退避、sleep、重连；
+ *   4. 达到 maxReconnects 或 maxTotalMs：跳出循环，结束本次迭代（双重退出保险）。
  *
  * @param opts 重连配置
  */
 export function connectWithReconnect(opts: ReconnectOptions): void {
   const maxReconnects = opts.maxReconnects ?? 5;
+  const maxTotalMs = opts.maxTotalMs ?? 120000; // 默认单次迭代最多重连 2 分钟
   const baseMs = opts.baseDelayMs ?? 500;
   const maxMs = opts.maxDelayMs ?? 30000;
 
   let reconnectCount = 0;
+  const startedAt = Date.now();
 
   // ★ 断线重连主循环
   while (true) {
@@ -191,8 +207,14 @@ export function connectWithReconnect(opts: ReconnectOptions): void {
       metrics.wsConnectRate.add(false);
     }
 
-    // 是否继续重连
+    // 退出条件 1：达到最大重连次数
     if (reconnectCount >= maxReconnects) break;
+    // 退出条件 2：达到总时长上限（双保险，防止 VU 因高退避长期不释放）
+    if (Date.now() - startedAt >= maxTotalMs) {
+      console.log(`[VU ${__VU}] 已达重连总时长上限 ${maxTotalMs}ms，结束本次迭代`);
+      break;
+    }
+
     reconnectCount++;
     metrics.wsReconnects.add(1);
 
