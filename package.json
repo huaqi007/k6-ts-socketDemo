@@ -1,0 +1,39 @@
+{
+  "name": "k6-ts-socketdemo",
+  "version": "1.0.0",
+  "description": "WebSocket 行情压测 + Binance 风格签名下单全链路：TS + Webpack + k6（WS 深度订阅 / 断线重连指数退避 / 500 VU ramping / HMAC-SHA256 预签名下单 / 混合全链路）",
+  "main": "index.js",
+  "scripts": {
+    "build": "webpack && rm -rf dist/data && cp -r src/data dist/data",
+    "typecheck": "tsc --noEmit",
+    "gen:orders": "node scripts/gen-orders.js",
+    "mock": "node scripts/mock-server.js",
+    "test:connect": "k6 run dist/01-ws-connect.js",
+    "test:subscribe": "k6 run dist/02-ws-subscribe.js",
+    "test:reconnect": "k6 run dist/03-ws-reconnect.js",
+    "test:500vu": "k6 run dist/04-ws-500vu.js",
+    "test:order": "k6 run dist/05-signed-order.js",
+    "test:mixed": "k6 run dist/mixed-scenario.js",
+    "test:smoke": "k6 run dist/smoke-scenario.js"
+  },
+  "keywords": [
+    "k6",
+    "load-testing",
+    "websocket",
+    "typescript",
+    "webpack",
+    "hmac",
+    "binance",
+    "market-data"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/k6": "^2.0.0",
+    "ts-loader": "^9.6.2",
+    "typescript": "^6.0.3",
+    "webpack": "^5.108.3",
+    "webpack-cli": "^7.1.0"
+  }
+}
