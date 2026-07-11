@@ -3,4 +3,5 @@ dist/
 *.log
 .DS_Store
 summary.json
+summary.html
 *.tmp

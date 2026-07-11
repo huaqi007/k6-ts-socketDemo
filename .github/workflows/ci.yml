@@ -52,6 +52,16 @@ jobs:
       - name: Run smoke scenario
         run: npm run test:smoke
 
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: |
+            summary.html
+            summary.json
+          if-no-files-found: ignore
+
       - name: Stop mock server
         if: always()
         run: kill "$MOCK_PID" || true

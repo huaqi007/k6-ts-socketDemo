@@ -51,7 +51,8 @@ k6-ts-socketDemo/
 │   ├── data/
 │   │   └── orders.json        # 200 条订单参数模板
 │   ├── lib/
-│   │   └── metrics.ts         # 自定义 k6 指标（Counter/Trend/Rate）
+│   │   ├── metrics.ts         # 自定义 k6 指标（Counter/Trend/Rate）
+│   │   └── summary.ts         # handleSummary：终端摘要 + summary.html/json 报告
 │   ├── modules/
 │   │   ├── ws-client.ts       # 🔴 WS 框架：订阅/解析/退避/事件处理/断线重连主循环
 │   │   └── pre-signer.ts      # 🔴 Binance HMAC-SHA256 签名（SharedArray 模板 + 实时签名）
@@ -241,6 +242,7 @@ npm run test:500vu       # 需求3：500 VU 阶梯（约 3 分钟）
 npm run test:order       # 需求4：签名下单
 npm run test:mixed       # 需求5：全链路混合（约 3.5 分钟）
 npm run test:smoke       # 快速冒烟（约 35 秒）
+# ↑ mixed / smoke 结束后会在当前目录生成 summary.html（可视化报告）与 summary.json
 
 # 需求7：REST 限流(429)客户端退避测试（需以限流模式启动靶机）
 npm run mock:ratelimit   # 另一终端：MOCK_ORDER_RPS=50 启动带限流的靶机
@@ -269,6 +271,8 @@ typecheck (tsc --noEmit)  →  build (webpack)  →  install k6
 - **typecheck**：严格模式类型校验，编译期拦截错误；
 - **build**：验证 7 个 entry 全部打包成功；
 - **smoke**：真实拉起靶机跑 WS 订阅 + 签名下单双链路冒烟（约 35s），端到端验证通路。
+
+CI 跑完会把 `summary.html` / `summary.json` 作为工件（artifact）上传，可在 Actions 运行页面下载查阅。
 
 本地一键复现 CI 流程：
 

@@ -20,6 +20,7 @@
  */
 
 export { wsMarketData, signedOrder } from './handlers';
+export { handleSummary } from '../lib/summary';
 
 export const options = {
   // 同时对 WS 行情与签名下单两条链路设门禁，捕捉交叉劣化

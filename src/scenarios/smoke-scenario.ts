@@ -6,6 +6,7 @@
  */
 
 export { wsMarketData, signedOrder } from './handlers';
+export { handleSummary } from '../lib/summary';
 
 export const options = {
   scenarios: {
