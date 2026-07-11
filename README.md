@@ -1,5 +1,7 @@
 # k6-ts-socketDemo — WebSocket 行情压测 + 签名下单全链路
 
+[![CI](https://github.com/huaqi007/k6-ts-socketDemo/actions/workflows/ci.yml/badge.svg)](https://github.com/huaqi007/k6-ts-socketDemo/actions/workflows/ci.yml)
+
 > TypeScript + Webpack + k6 | WS 深度订阅 · 断线重连 · 500 VU 阶梯 · Binance HMAC-SHA256 签名下单 · 全链路混合场景
 
 一套围绕「加密货币交易所」的性能压测工程：既压 **WebSocket 实时行情**（高并发长连接 + 深度订阅 + 断线重连），又压 **REST 签名下单**（Binance 风格 HMAC-SHA256 验签），并把两条链路合成 **全链路混合场景**。
@@ -15,7 +17,8 @@
 | 3 | 500 VU 同时订阅（ramping-vus 阶梯） | `src/scenarios/04-ws-500vu.ts` | 峰值 500 VU，61 万条深度快照 100% 有效 |
 | 4 | Binance 风格 HMAC-SHA256 签名下单 | `src/modules/pre-signer.ts`、`src/scenarios/05-signed-order.ts` | 4199 单 100% 受理；篡改签名/错误 Key/过期时间戳均被正确拒绝 |
 | 5 | WS 行情 + 签名下单全链路混合 | `src/scenarios/handlers.ts`、`mixed-scenario.ts` | 峰值 530 VU，131 万 checks 100% 通过 |
-| 6 | TypeScript + Webpack 打包 | `webpack.config.js`、`tsconfig.json` | 7 个 entry 全部编译打包成功 |
+| 6 | TypeScript + Webpack 打包 | `webpack.config.js`、`tsconfig.json` | 8 个 entry 全部编译打包成功 |
+| 7 | REST 限流（429/Retry-After）客户端退避 | `src/scenarios/06-rate-limit.ts`、`scripts/mock-server.js`（令牌桶） | 突发触发 429（-1003）+ 418 封禁；遵守 Retry-After 重试后最终成功率 100% |
 
 ---
 
@@ -57,6 +60,7 @@ k6-ts-socketDemo/
 │   │   ├── 03-ws-reconnect.ts # 需求2：断线重连框架
 │   │   ├── 04-ws-500vu.ts     # 需求3：500 VU ramping-vus
 │   │   ├── 05-signed-order.ts # 需求4：签名下单
+│   │   ├── 06-rate-limit.ts   # 需求7：REST 限流(429/Retry-After)客户端退避
 │   │   ├── handlers.ts        # 需求5：混合场景共享 exec 函数
 │   │   ├── mixed-scenario.ts  # 🔴 主入口：WS + 下单全链路
 │   │   └── smoke-scenario.ts  # CI 冒烟（短时低压）
@@ -92,6 +96,7 @@ Header: X-MBX-APIKEY: <apiKey>
 5. 全部通过 → `200 {orderId, status:'NEW', ...}`
 
 > `MOCK_ERR_RATE` 环境变量可注入随机 500，用于演示客户端重试。
+> `MOCK_ORDER_RPS` 环境变量可开启下单接口令牌桶限流（按 IP，每秒许可数）：超限返回 `429 {code:-1003}` 并带 `Retry-After` 头，连续 20 次超限升级为 `418` 临时封禁——用于验证客户端的限流退避处理。
 
 ---
 
@@ -234,8 +239,35 @@ npm run test:order       # 需求4：签名下单
 npm run test:mixed       # 需求5：全链路混合（约 3.5 分钟）
 npm run test:smoke       # 快速冒烟（约 35 秒）
 
+# 需求7：REST 限流(429)客户端退避测试（需以限流模式启动靶机）
+npm run mock:ratelimit   # 另一终端：MOCK_ORDER_RPS=50 启动带限流的靶机
+npm run test:ratelimit   # 突发发压触发 429，客户端遵守 Retry-After 重试
+
 # 环境变量覆盖示例
 k6 run -e WS_URL=ws://host:8080/ws -e BASE_URL=http://host:8080 dist/mixed-scenario.js
+```
+
+---
+
+## 6.1 持续集成（GitHub Actions）
+
+`.github/workflows/ci.yml` 在每次 push / PR 时自动执行完整流水线，保证提交始终可编译、可运行：
+
+```
+typecheck (tsc --noEmit)  →  build (webpack)  →  install k6
+   →  启动 mock-server 并等待健康检查  →  运行 smoke 场景  →  关闭靶机
+```
+
+- **typecheck**：严格模式类型校验，编译期拦截错误；
+- **build**：验证 7 个 entry 全部打包成功；
+- **smoke**：真实拉起靶机跑 WS 订阅 + 签名下单双链路冒烟（约 35s），端到端验证通路。
+
+本地一键复现 CI 流程：
+
+```bash
+npm run typecheck && npm run build \
+  && npm run mock & \
+  sleep 2 && npm run test:smoke
 ```
 
 ---
@@ -252,6 +284,9 @@ k6 run -e WS_URL=ws://host:8080/ws -e BASE_URL=http://host:8080 dist/mixed-scena
 | `orders_placed` / `order_errors` / `order_success_rate` | Counter/Rate | 下单成功 / 失败 / 成功率 |
 | `order_latency_ms` | Trend | 下单 HTTP 延迟分布 |
 | `order_sign_rejects` | Counter | 签名被拒（401/-1022）次数 |
+| `order_rate_limited` / `order_rate_limit_banned` | Counter | 命中 429 限流 / 升级 418 封禁次数 |
+| `order_retry_after_ms` | Trend | 服务端 Retry-After 建议等待时长分布 |
+| `order_eventual_success_rate` | Rate | 含退避重试后的「最终成功率」（限流健壮性核心指标） |
 | `script_errors` | Counter | 脚本级异常（JSON 解析等） |
 
 ---

@@ -25,6 +25,8 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 8080;
 // 注入错误率（0~1），用于演示客户端指数退避重试；默认 0 便于验证成功率
 const ERR_RATE = parseFloat(process.env.MOCK_ERR_RATE || '0');
+// 下单接口每秒许可数（令牌桶容量与补充速率）。0 = 不限流（默认，兼容既有下单测试）
+const ORDER_RPS = parseInt(process.env.MOCK_ORDER_RPS || '0', 10);
 
 // apiKey → secret 映射（与 src/config/env.ts 默认值保持一致）
 const API_CREDENTIALS = {
@@ -57,6 +59,44 @@ function hmacSha256(secret, payload) {
 }
 
 // ============================================================================
+// 下单限流：令牌桶（对齐 Binance IP 权重限流的行为模型）
+// ============================================================================
+// Binance 超过速率上限时返回 HTTP 429（code -1003），并带 Retry-After 头告知
+// 客户端应等待多少秒再重试；持续超限会升级为 HTTP 418（临时封禁）。
+// 这里用「按 IP 的令牌桶」近似：容量 = 每秒补充 = ORDER_RPS。
+const rateBuckets = new Map(); // ip -> { tokens, lastRefill, strikes }
+
+/**
+ * 尝试为某 IP 取一个令牌。
+ * @returns { allowed:true } | { allowed:false, retryAfter:秒, banned:bool }
+ */
+function takeToken(ip) {
+  if (ORDER_RPS <= 0) return { allowed: true }; // 未开启限流
+  const now = Date.now();
+  let b = rateBuckets.get(ip);
+  if (!b) {
+    b = { tokens: ORDER_RPS, lastRefill: now, strikes: 0 };
+    rateBuckets.set(ip, b);
+  }
+  // 按经过时间线性补充令牌，上限为容量
+  const elapsedSec = (now - b.lastRefill) / 1000;
+  b.tokens = Math.min(ORDER_RPS, b.tokens + elapsedSec * ORDER_RPS);
+  b.lastRefill = now;
+
+  if (b.tokens >= 1) {
+    b.tokens -= 1;
+    b.strikes = 0;
+    return { allowed: true };
+  }
+  // 令牌不足：计算需等待多久才能攒够 1 个令牌
+  const retryAfter = Math.max(1, Math.ceil((1 - b.tokens) / ORDER_RPS));
+  b.strikes += 1;
+  // 连续 20 次超限 → 升级为 418 临时封禁（对齐 Binance 行为）
+  const banned = b.strikes >= 20;
+  return { allowed: false, retryAfter, banned };
+}
+
+// ============================================================================
 // HTTP 路由
 // ============================================================================
 function handleHTTP(req, res) {
@@ -84,6 +124,19 @@ function handleHTTP(req, res) {
  * 因此服务端只需按 '&signature=' 切割，对前半段重算 HMAC 即可验签。
  */
 function handleSignedOrder(req, res) {
+  // 0) 限流检查（在业务处理前，行为对齐 Binance IP 权重限流）
+  const ip = req.socket.remoteAddress || 'unknown';
+  const gate = takeToken(ip);
+  if (!gate.allowed) {
+    res.setHeader('Retry-After', String(gate.retryAfter));
+    if (gate.banned) {
+      res.writeHead(418);
+      return res.end(JSON.stringify({ code: -1003, msg: "Way too many requests; IP banned until further notice." }));
+    }
+    res.writeHead(429);
+    return res.end(JSON.stringify({ code: -1003, msg: "Too many requests; current request has been rejected." }));
+  }
+
   // 1) 校验 API Key
   const apiKey = req.headers['x-mbx-apikey'];
   const secret = apiKey && API_CREDENTIALS[apiKey];
@@ -340,4 +393,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Signed order:     POST http://localhost:${PORT}/api/v3/order`);
   console.log(`  Health:           GET  http://localhost:${PORT}/api/v1/health`);
   console.log(`  Inject error rate: ${ERR_RATE}`);
+  console.log(`  Order rate limit:  ${ORDER_RPS > 0 ? ORDER_RPS + ' rps/IP (429 + Retry-After)' : 'disabled'}`);
 });

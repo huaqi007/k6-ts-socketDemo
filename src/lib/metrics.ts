@@ -31,6 +31,12 @@ export const metrics = {
   signRejects: new Counter('order_sign_rejects'),     // 签名校验失败（HTTP 401/-1022）次数
   orderSuccessRate: new Rate('order_success_rate'),   // 下单成功率
 
+  // ── 限流（429 / 418）──
+  rateLimited: new Counter('order_rate_limited'),        // 命中 429 限流次数
+  rateLimitBanned: new Counter('order_rate_limit_banned'), // 升级为 418 封禁次数
+  retryAfterMs: new Trend('order_retry_after_ms', true), // 服务端 Retry-After 建议等待时长
+  orderEventualSuccessRate: new Rate('order_eventual_success_rate'), // 含重试后的最终成功率
+
   // ── 可观测性 ──
   scriptErrors: new Counter('script_errors'),         // 脚本级异常（JSON 解析等）
 };

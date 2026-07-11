@@ -8,11 +8,13 @@
     "typecheck": "tsc --noEmit",
     "gen:orders": "node scripts/gen-orders.js",
     "mock": "node scripts/mock-server.js",
+    "mock:ratelimit": "MOCK_ORDER_RPS=50 node scripts/mock-server.js",
     "test:connect": "k6 run dist/01-ws-connect.js",
     "test:subscribe": "k6 run dist/02-ws-subscribe.js",
     "test:reconnect": "k6 run dist/03-ws-reconnect.js",
     "test:500vu": "k6 run dist/04-ws-500vu.js",
     "test:order": "k6 run dist/05-signed-order.js",
+    "test:ratelimit": "k6 run dist/06-rate-limit.js",
     "test:mixed": "k6 run dist/mixed-scenario.js",
     "test:smoke": "k6 run dist/smoke-scenario.js"
   },

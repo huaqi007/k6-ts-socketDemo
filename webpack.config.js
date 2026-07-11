@@ -23,6 +23,8 @@ module.exports = {
     '04-ws-500vu': './src/scenarios/04-ws-500vu.ts',
     // ── 需求 4：Binance 风格 HMAC-SHA256 签名下单 ──
     '05-signed-order': './src/scenarios/05-signed-order.ts',
+    // ── REST 限流（429 / Retry-After）客户端退避测试 ──
+    '06-rate-limit': './src/scenarios/06-rate-limit.ts',
     // ── 需求 5：WS 行情 + 签名下单全链路混合场景 ──
     'mixed-scenario': './src/scenarios/mixed-scenario.ts',
     // CI 冒烟场景（短时低压，复用同一套 exec 函数）
