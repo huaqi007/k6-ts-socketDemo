@@ -4,4 +4,6 @@ dist/
 .DS_Store
 summary.json
 summary.html
+playwright-report/
+test-results/
 *.tmp

@@ -18,7 +18,9 @@
     "test:ratelimit": "k6 run dist/06-rate-limit.js",
     "test:orderbook": "k6 run dist/07-orderbook-sync.js",
     "test:mixed": "k6 run dist/mixed-scenario.js",
-    "test:smoke": "k6 run dist/smoke-scenario.js"
+    "test:smoke": "k6 run dist/smoke-scenario.js",
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report"
   },
   "keywords": [
     "k6",
@@ -34,6 +36,7 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/k6": "^2.0.0",
     "ts-loader": "^9.6.2",
     "typescript": "^6.0.3",

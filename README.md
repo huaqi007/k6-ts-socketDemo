@@ -68,6 +68,13 @@ k6-ts-socketDemo/
 │   │   ├── mixed-scenario.ts  # 🔴 主入口：WS + 下单全链路
 │   │   └── smoke-scenario.ts  # CI 冒烟（短时低压）
 │   └── types/k6-globals.d.ts  # console 等运行时全局声明
+├── tests/                     # Playwright 功能 / E2E 测试（与 k6 压测互补）
+│   ├── helpers/sign.ts        # Binance HMAC-SHA256 签名助手（与 k6 口径一致）
+│   ├── health.spec.ts         # 健康检查
+│   ├── signed-order.spec.ts   # 签名下单 1 正 + 4 负
+│   ├── rate-limit.spec.ts     # 429 限流 + Retry-After + -1003
+│   └── ws-depth.spec.ts       # 浏览器 WebSocket 深度订阅 + 序列连续性
+├── playwright.config.ts       # Playwright 配置（webServer 自启正常/限流两个靶机）
 ├── webpack.config.js
 ├── tsconfig.json
 └── package.json
@@ -269,10 +276,12 @@ typecheck (tsc --noEmit)  →  build (webpack)  →  install k6
 ```
 
 - **typecheck**：严格模式类型校验，编译期拦截错误；
-- **build**：验证 7 个 entry 全部打包成功；
+- **build**：验证 9 个 entry 全部打包成功；
 - **smoke**：真实拉起靶机跑 WS 订阅 + 签名下单双链路冒烟（约 35s），端到端验证通路。
 
 CI 跑完会把 `summary.html` / `summary.json` 作为工件（artifact）上传，可在 Actions 运行页面下载查阅。
+
+CI 另有独立的 **Playwright E2E** job：安装 chromium → 自动拉起靶机 → 跑功能用例 → 上传 `playwright-report` 工件。
 
 本地一键复现 CI 流程：
 
@@ -281,6 +290,26 @@ npm run typecheck && npm run build \
   && npm run mock & \
   sleep 2 && npm run test:smoke
 ```
+
+---
+
+## 6.2 功能 / E2E 测试（Playwright）
+
+k6 负责「性能/负载」，Playwright 负责「功能正确性」——两者打同一个 mock-server，互补覆盖。
+
+```bash
+npm run test:e2e          # 运行全部 E2E 用例（webServer 自动拉起 8080 正常 + 8081 限流两个靶机）
+npm run test:e2e:report   # 查看上次运行的 HTML 报告
+```
+
+| 用例文件 | 覆盖点 |
+|---|---|
+| `tests/health.spec.ts` | 健康检查 200 / `{status:ok}` |
+| `tests/signed-order.spec.ts` | 签名下单 1 正 + 4 负（-1022 篡改 / -2015 错 Key / -1102 缺签名 / -1021 过期） |
+| `tests/rate-limit.spec.ts` | 突发请求触发 429/418 + `Retry-After` + code `-1003` |
+| `tests/ws-depth.spec.ts` | 真实浏览器 WebSocket 订阅深度，校验 bids/asks 有效性与 `pu==上一帧u` 序列连续性 |
+
+> `tests/helpers/sign.ts` 复用与 k6 一致的 Binance HMAC-SHA256 签名规则，保证两套测试对靶机的验签口径统一。
 
 ---
 
