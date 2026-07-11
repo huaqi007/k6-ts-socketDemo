@@ -20,7 +20,11 @@
     "test:mixed": "k6 run dist/mixed-scenario.js",
     "test:smoke": "k6 run dist/smoke-scenario.js",
     "test:e2e": "playwright test",
-    "test:e2e:report": "playwright show-report"
+    "test:e2e:report": "playwright show-report",
+    "docker:up": "docker compose up -d mock mock-rl",
+    "docker:k6": "docker compose run --rm k6",
+    "docker:e2e": "docker compose --profile e2e run --rm e2e",
+    "docker:down": "docker compose down"
   },
   "keywords": [
     "k6",

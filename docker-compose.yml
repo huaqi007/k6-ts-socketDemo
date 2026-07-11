@@ -1,0 +1,89 @@
+# ============================================================================
+# docker-compose.yml — 一键起「压测环境」并按需运行 k6 / Playwright
+# ============================================================================
+# 常用命令：
+#   docker compose up -d mock mock-rl        # 拉起两个靶机（8080 正常 / 8081 限流）
+#   docker compose run --rm k6               # 跑默认 smoke 压测（打 mock:8080）
+#   docker compose run --rm k6 k6 run dist/04-ws-500vu.js   # 跑指定场景
+#   docker compose run --rm k6-ratelimit     # 跑限流场景（打 mock-rl:8081）
+#   docker compose --profile e2e run --rm e2e   # 跑 Playwright 功能测试
+#   docker compose down                      # 停止并清理
+# ============================================================================
+
+services:
+  # ── 正常靶机（健康检查 / WS 深度 / 签名下单）──
+  mock:
+    build: .
+    image: k6-exchange-perf-toolkit
+    command: node scripts/mock-server.js
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── 限流靶机（MOCK_ORDER_RPS=5，供 Playwright 30 并发轻松触发 429）──
+  mock-rl:
+    image: k6-exchange-perf-toolkit
+    build: .
+    command: node scripts/mock-server.js
+    environment:
+      PORT: "8081"
+      MOCK_ORDER_RPS: "5"
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8081/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── 限流靶机（MOCK_ORDER_RPS=50，供 k6 限流场景的退避重试模型，仅内网访问）──
+  mock-rl-k6:
+    image: k6-exchange-perf-toolkit
+    build: .
+    command: node scripts/mock-server.js
+    environment:
+      PORT: "8082"
+      MOCK_ORDER_RPS: "50"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8082/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── k6 执行器：默认跑 smoke，打正常靶机 ──
+  k6:
+    image: k6-exchange-perf-toolkit
+    build: .
+    depends_on:
+      mock:
+        condition: service_healthy
+    environment:
+      WS_URL: ws://mock:8080/ws
+      BASE_URL: http://mock:8080
+    command: k6 run dist/smoke-scenario.js
+
+  # ── k6 执行器：限流场景，打限流靶机 ──
+  k6-ratelimit:
+    image: k6-exchange-perf-toolkit
+    build: .
+    depends_on:
+      mock-rl-k6:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://mock-rl-k6:8082
+    command: k6 run dist/06-rate-limit.js
+
+  # ── Playwright 功能/E2E（自带 webServer 起靶机，自包含）──
+  # 用 --profile e2e 显式启用，避免默认 up 时拉起
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.61.1-jammy
+    profiles: ["e2e"]
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    command: sh -c "npm ci && npx playwright test"

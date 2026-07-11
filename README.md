@@ -75,6 +75,8 @@ k6-ts-socketDemo/
 │   ├── rate-limit.spec.ts     # 429 限流 + Retry-After + -1003
 │   └── ws-depth.spec.ts       # 浏览器 WebSocket 深度订阅 + 序列连续性
 ├── playwright.config.ts       # Playwright 配置（webServer 自启正常/限流两个靶机）
+├── Dockerfile                 # 多阶段：npm build + 装 k6，mock/k6 服务复用
+├── docker-compose.yml         # 一键起环境（mock/mock-rl/k6/e2e）
 ├── webpack.config.js
 ├── tsconfig.json
 └── package.json
@@ -310,6 +312,41 @@ npm run test:e2e:report   # 查看上次运行的 HTML 报告
 | `tests/ws-depth.spec.ts` | 真实浏览器 WebSocket 订阅深度，校验 bids/asks 有效性与 `pu==上一帧u` 序列连续性 |
 
 > `tests/helpers/sign.ts` 复用与 k6 一致的 Binance HMAC-SHA256 签名规则，保证两套测试对靶机的验签口径统一。
+
+---
+
+## 6.3 Docker 一键环境
+
+不装 Node / k6 / 浏览器，用 Docker 一条命令拉起完整压测环境。镜像多阶段构建（`npm run build` 打包 + 装 k6 二进制），`mock` / `k6` 等服务复用同一镜像。
+
+```bash
+# 拉起靶机（8080 正常 / 8081 限流），后台常驻
+docker compose up -d mock mock-rl
+
+# 跑默认 smoke 压测（打 mock:8080）
+docker compose run --rm k6
+# 跑指定场景
+docker compose run --rm k6 k6 run dist/04-ws-500vu.js
+# 跑限流场景（自带 50rps 内网限流靶机，验证退避重试）
+docker compose run --rm k6-ratelimit
+# 跑 Playwright 功能测试（自包含，含 chromium）
+docker compose --profile e2e run --rm e2e
+
+# 停止并清理
+docker compose down
+```
+
+也提供 npm 快捷脚本：`npm run docker:up` / `docker:k6` / `docker:e2e` / `docker:down`。
+
+| 服务 | 作用 |
+|---|---|
+| `mock` | 正常靶机（8080）：健康检查 / WS 深度 / 签名下单 |
+| `mock-rl` | 限流靶机（8081，`MOCK_ORDER_RPS=5`）：供 Playwright 触发 429 |
+| `mock-rl-k6` | 限流靶机（8082，`MOCK_ORDER_RPS=50`，仅内网）：供 k6 退避重试场景 |
+| `k6` / `k6-ratelimit` | k6 执行器，跑压测场景 |
+| `e2e` | Playwright 功能测试（`--profile e2e` 启用） |
+
+> k6 镜像在构建期用 `dpkg --print-architecture` 探测架构下载对应 k6 二进制，amd64 / arm64 均原生运行。
 
 ---
 
