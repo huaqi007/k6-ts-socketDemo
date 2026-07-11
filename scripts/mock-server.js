@@ -27,6 +27,8 @@ const PORT = process.env.PORT || 8080;
 const ERR_RATE = parseFloat(process.env.MOCK_ERR_RATE || '0');
 // 下单接口每秒许可数（令牌桶容量与补充速率）。0 = 不限流（默认，兼容既有下单测试）
 const ORDER_RPS = parseInt(process.env.MOCK_ORDER_RPS || '0', 10);
+// 增量深度流序列缺口注入率（0~1）：制造 U 与上次 u 不连续，用于验证客户端能检出丢包。0 = 关闭（默认）
+const SEQ_GAP_RATE = parseFloat(process.env.MOCK_SEQ_GAP_RATE || '0');
 
 // apiKey → secret 映射（与 src/config/env.ts 默认值保持一致）
 const API_CREDENTIALS = {
@@ -271,6 +273,8 @@ class WSConnection {
     this.buffer = Buffer.alloc(0);
     this.pushTimer = null;
     this.alive = true;
+    // 按交易对维护的深度更新序列号（模拟 Binance 增量深度流的 lastUpdateId）
+    this.seq = new Map();
   }
 
   send(msg) {
@@ -289,11 +293,30 @@ class WSConnection {
         const symbol = sub.replace('@depth', '').toUpperCase();
         const base = BASE_PRICES[symbol] || 100;
         const { bids, asks } = randomDepth(base);
+
+        // 生成 Binance 风格的增量深度序列号：
+        //   U  = 本次更新的首个 update id
+        //   u  = 本次更新的末个 update id
+        //   pu = 上一帧的末个 update id（客户端据 pu==上一帧u 判断是否连续）
+        const prevU = this.seq.get(symbol) || 0;
+        const firstId = prevU + 1;
+        const finalId = firstId + Math.floor(Math.random() * 3);
+        this.seq.set(symbol, finalId);
+
+        // 按概率「丢帧」（默认关闭）：序列号已前进但本帧不发送，
+        // 使下一帧的 pu 与客户端记录的上一帧 u 不一致 → 客户端应检出缺口。
+        if (SEQ_GAP_RATE > 0 && Math.random() < SEQ_GAP_RATE) {
+          continue;
+        }
+
         this.send(JSON.stringify({
           e: 'depthUpdate',       // 事件类型（对齐 Binance 命名）
           E: Date.now(),          // 事件时间
           s: symbol,              // 交易对
           channel: sub,           // 原始频道名
+          U: firstId,             // 本次更新首个 id
+          u: finalId,             // 本次更新末个 id
+          pu: prevU,              // 上一帧末个 id（连续性校验用）
           bids,                   // 买盘 5 档 [价格, 数量]
           asks,                   // 卖盘 5 档 [价格, 数量]
         }));
@@ -311,6 +334,14 @@ class WSConnection {
             msg.params.forEach((p) => this.subscriptions.add(p));
             this.send(JSON.stringify({ method: 'SUBSCRIBED', params: [...this.subscriptions], id: msg.id }));
             console.log(`[WS:${this.id}] => subscribed: ${[...this.subscriptions].join(', ')}`);
+          } else if (msg.method === 'GET_SNAPSHOT' && msg.symbol) {
+            // 返回当前订单簿全量快照 + 对应 lastUpdateId，
+            // 供客户端按 Binance「快照 + 增量」流程构建本地订单簿
+            const symbol = String(msg.symbol).toUpperCase();
+            const base = BASE_PRICES[symbol] || 100;
+            const { bids, asks } = randomDepth(base);
+            const lastUpdateId = this.seq.get(symbol) || 0;
+            this.send(JSON.stringify({ method: 'SNAPSHOT', symbol, lastUpdateId, bids, asks }));
           }
         } catch (_) {
           /* 忽略非 JSON */
@@ -394,4 +425,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Health:           GET  http://localhost:${PORT}/api/v1/health`);
   console.log(`  Inject error rate: ${ERR_RATE}`);
   console.log(`  Order rate limit:  ${ORDER_RPS > 0 ? ORDER_RPS + ' rps/IP (429 + Retry-After)' : 'disabled'}`);
+  console.log(`  Depth seq gap rate: ${SEQ_GAP_RATE}`);
 });

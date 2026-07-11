@@ -17,8 +17,9 @@
 | 3 | 500 VU 同时订阅（ramping-vus 阶梯） | `src/scenarios/04-ws-500vu.ts` | 峰值 500 VU，61 万条深度快照 100% 有效 |
 | 4 | Binance 风格 HMAC-SHA256 签名下单 | `src/modules/pre-signer.ts`、`src/scenarios/05-signed-order.ts` | 4199 单 100% 受理；篡改签名/错误 Key/过期时间戳均被正确拒绝 |
 | 5 | WS 行情 + 签名下单全链路混合 | `src/scenarios/handlers.ts`、`mixed-scenario.ts` | 峰值 530 VU，131 万 checks 100% 通过 |
-| 6 | TypeScript + Webpack 打包 | `webpack.config.js`、`tsconfig.json` | 8 个 entry 全部编译打包成功 |
+| 6 | TypeScript + Webpack 打包 | `webpack.config.js`、`tsconfig.json` | 9 个 entry 全部编译打包成功 |
 | 7 | REST 限流（429/Retry-After）客户端退避 | `src/scenarios/06-rate-limit.ts`、`scripts/mock-server.js`（令牌桶） | 突发触发 429（-1003）+ 418 封禁；遵守 Retry-After 重试后最终成功率 100% |
+| 8 | 订单簿增量同步一致性（U/u/pu 序列连续性） | `src/scenarios/07-orderbook-sync.ts`、`scripts/mock-server.js`（增量深度流） | 快照+增量无缝衔接，连续率 100%；注入丢帧时正确检出缺口（连续率降至 ~90%） |
 
 ---
 
@@ -61,6 +62,7 @@ k6-ts-socketDemo/
 │   │   ├── 04-ws-500vu.ts     # 需求3：500 VU ramping-vus
 │   │   ├── 05-signed-order.ts # 需求4：签名下单
 │   │   ├── 06-rate-limit.ts   # 需求7：REST 限流(429/Retry-After)客户端退避
+│   │   ├── 07-orderbook-sync.ts # 需求8：订单簿增量同步一致性(U/u/pu 连续性)
 │   │   ├── handlers.ts        # 需求5：混合场景共享 exec 函数
 │   │   ├── mixed-scenario.ts  # 🔴 主入口：WS + 下单全链路
 │   │   └── smoke-scenario.ts  # CI 冒烟（短时低压）
@@ -97,6 +99,7 @@ Header: X-MBX-APIKEY: <apiKey>
 
 > `MOCK_ERR_RATE` 环境变量可注入随机 500，用于演示客户端重试。
 > `MOCK_ORDER_RPS` 环境变量可开启下单接口令牌桶限流（按 IP，每秒许可数）：超限返回 `429 {code:-1003}` 并带 `Retry-After` 头，连续 20 次超限升级为 `418` 临时封禁——用于验证客户端的限流退避处理。
+> `MOCK_SEQ_GAP_RATE` 环境变量可按概率「丢帧」（序列号已前进但不发送），使下一帧 `pu` 与客户端上一帧 `u` 不一致——用于验证订单簿同步脚本能检出丢包缺口。
 
 ---
 
@@ -243,6 +246,11 @@ npm run test:smoke       # 快速冒烟（约 35 秒）
 npm run mock:ratelimit   # 另一终端：MOCK_ORDER_RPS=50 启动带限流的靶机
 npm run test:ratelimit   # 突发发压触发 429，客户端遵守 Retry-After 重试
 
+# 需求8：订单簿增量同步一致性
+npm run mock             # 正常靶机 → 连续率应为 100%
+npm run test:orderbook
+npm run mock:seqgap      # 或以丢帧模式启动（MOCK_SEQ_GAP_RATE=0.1）验证缺口检出
+
 # 环境变量覆盖示例
 k6 run -e WS_URL=ws://host:8080/ws -e BASE_URL=http://host:8080 dist/mixed-scenario.js
 ```
@@ -287,6 +295,8 @@ npm run typecheck && npm run build \
 | `order_rate_limited` / `order_rate_limit_banned` | Counter | 命中 429 限流 / 升级 418 封禁次数 |
 | `order_retry_after_ms` | Trend | 服务端 Retry-After 建议等待时长分布 |
 | `order_eventual_success_rate` | Rate | 含退避重试后的「最终成功率」（限流健壮性核心指标） |
+| `ob_sync_success` / `ob_events_applied` | Counter | 完成快照+增量同步次数 / 应用的增量事件数 |
+| `ob_seq_gaps` / `ob_continuity_rate` | Counter/Rate | 序列缺口检出次数 / 增量事件连续率 |
 | `script_errors` | Counter | 脚本级异常（JSON 解析等） |
 
 ---

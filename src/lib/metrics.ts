@@ -37,6 +37,12 @@ export const metrics = {
   retryAfterMs: new Trend('order_retry_after_ms', true), // 服务端 Retry-After 建议等待时长
   orderEventualSuccessRate: new Rate('order_eventual_success_rate'), // 含重试后的最终成功率
 
+  // ── 订单簿增量同步一致性 ──
+  obSynced: new Counter('ob_sync_success'),           // 成功完成「快照 + 增量」同步的次数
+  obEventsApplied: new Counter('ob_events_applied'),  // 应用到本地订单簿的增量事件数
+  obSeqGaps: new Counter('ob_seq_gaps'),              // 序列不连续（丢包）检出次数
+  obContinuityRate: new Rate('ob_continuity_rate'),   // 增量事件序列连续率
+
   // ── 可观测性 ──
   scriptErrors: new Counter('script_errors'),         // 脚本级异常（JSON 解析等）
 };
