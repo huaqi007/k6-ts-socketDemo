@@ -24,6 +24,7 @@
     "docker:up": "docker compose up -d mock mock-rl",
     "docker:k6": "docker compose run --rm k6",
     "docker:e2e": "docker compose --profile e2e run --rm e2e",
+    "docker:pytest": "docker compose --profile pytest run --rm pytest",
     "docker:down": "docker compose down"
   },
   "keywords": [

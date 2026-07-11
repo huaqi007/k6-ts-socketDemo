@@ -6,4 +6,7 @@ summary.json
 summary.html
 playwright-report/
 test-results/
+.venv/
+__pycache__/
+.pytest_cache/
 *.tmp

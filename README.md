@@ -75,6 +75,13 @@ k6-ts-socketDemo/
 │   ├── rate-limit.spec.ts     # 429 限流 + Retry-After + -1003
 │   └── ws-depth.spec.ts       # 浏览器 WebSocket 深度订阅 + 序列连续性
 ├── playwright.config.ts       # Playwright 配置（webServer 自启正常/限流两个靶机）
+├── pytests/                   # Pytest 接口/WS 功能测试（Python 栈）
+│   ├── conftest.py            # 会话夹具：自动拉起/复用靶机
+│   ├── helpers/sign.py        # Binance HMAC-SHA256 签名助手（与 k6/Playwright 口径一致）
+│   ├── test_health.py         # 健康检查
+│   ├── test_signed_order.py   # 签名下单 1 正 + 4 负
+│   ├── test_rate_limit.py     # 并发 429 + Retry-After + -1003
+│   └── test_ws_depth.py       # WebSocket 深度订阅 + 序列连续性
 ├── Dockerfile                 # 多阶段：npm build + 装 k6，mock/k6 服务复用
 ├── docker-compose.yml         # 一键起环境（mock/mock-rl/k6/e2e）
 ├── webpack.config.js
@@ -315,7 +322,29 @@ npm run test:e2e:report   # 查看上次运行的 HTML 报告
 
 ---
 
-## 6.3 Docker 一键环境
+## 6.3 Pytest 接口/WS 测试（Python 栈）
+
+再补一套 Python 功能测试，覆盖招聘 JD 高频点名的 Pytest + requests + websocket-client 组合，与 k6 / Playwright 形成 **三栈互补**（同一套签名规则、同一个 mock-server）。
+
+```bash
+cd pytests
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pytest                      # conftest 会自动拉起（或复用）靶机
+```
+
+| 用例文件 | 覆盖点 |
+|---|---|
+| `pytests/test_health.py` | 健康检查 |
+| `pytests/test_signed_order.py` | 签名下单 1 正 + 4 负（-1022 / -2015 / -1102 / -1021） |
+| `pytests/test_rate_limit.py` | 30 线程并发触发 429/418 + `Retry-After` + `-1003` |
+| `pytests/test_ws_depth.py` | websocket-client 订阅深度，校验 bids/asks + `pu` 序列连续性 |
+
+> `pytests/conftest.py` 会话夹具：若靶机已在运行则复用，否则用 `node scripts/mock-server.js` 自动拉起 8080/8081 两实例并在结束后回收。`pytests/helpers/sign.py` 与 k6/Playwright 共用同一 HMAC 签名约定。
+
+---
+
+## 6.4 Docker 一键环境
 
 不装 Node / k6 / 浏览器，用 Docker 一条命令拉起完整压测环境。镜像多阶段构建（`npm run build` 打包 + 装 k6 二进制），`mock` / `k6` 等服务复用同一镜像。
 
@@ -331,12 +360,14 @@ docker compose run --rm k6 k6 run dist/04-ws-500vu.js
 docker compose run --rm k6-ratelimit
 # 跑 Playwright 功能测试（自包含，含 chromium）
 docker compose --profile e2e run --rm e2e
+# 跑 Pytest 接口/WS 测试（复用 compose 的 mock 服务）
+docker compose --profile pytest run --rm pytest
 
 # 停止并清理
 docker compose down
 ```
 
-也提供 npm 快捷脚本：`npm run docker:up` / `docker:k6` / `docker:e2e` / `docker:down`。
+也提供 npm 快捷脚本：`npm run docker:up` / `docker:k6` / `docker:e2e` / `docker:pytest` / `docker:down`。
 
 | 服务 | 作用 |
 |---|---|
@@ -345,6 +376,7 @@ docker compose down
 | `mock-rl-k6` | 限流靶机（8082，`MOCK_ORDER_RPS=50`，仅内网）：供 k6 退避重试场景 |
 | `k6` / `k6-ratelimit` | k6 执行器，跑压测场景 |
 | `e2e` | Playwright 功能测试（`--profile e2e` 启用） |
+| `pytest` | Pytest 接口/WS 测试（`--profile pytest` 启用） |
 
 > k6 镜像在构建期用 `dpkg --print-architecture` 探测架构下载对应 k6 二进制，amd64 / arm64 均原生运行。
 
