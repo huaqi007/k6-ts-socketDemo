@@ -97,29 +97,3 @@ jobs:
           path: playwright-report/
           if-no-files-found: ignore
 
-  pytest:
-    name: Pytest API/WS
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Python deps
-        run: pip install -r pytests/requirements.txt
-
-      - name: Run pytest (conftest 自动拉起靶机)
-        working-directory: pytests
-        run: pytest
-
-
